@@ -386,6 +386,42 @@ class TestSettings:
         assert settings.database_configs["sales"].name == "sales"
         assert settings.database_configs["sales"].host == "sales.example"
 
+    def test_named_database_retains_explicit_physical_name(self) -> None:
+        settings = Settings(
+            openai=OpenAIConfig(api_key="sk-test"),
+            databases='{"analytics":{"name":"warehouse_prod","host":"db.example"}}',
+        )
+
+        assert settings.database_configs["analytics"].name == "warehouse_prod"
+
+    def test_prefixed_environment_and_dotenv_load_nested_sections(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        env_file = tmp_path / "settings.env"
+        env_file.write_text(
+            "OPENAI_API_KEY=sk-dotenv\n"
+            "OPENAI_MODEL=dotenv-model\n"
+            "DATABASE_HOST=dotenv-db\n"
+            "DATABASE_USER=dotenv-user\n"
+            "SECURITY_BLOCKED_COLUMNS=email, users.ssn\n"
+            "RESILIENCE_MAX_RETRIES=2\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-process")
+        monkeypatch.setenv("DATABASE_HOST", "process-db")
+        monkeypatch.setenv("SECURITY_BLOCKED_TABLES", "public.credentials,api_keys")
+        monkeypatch.setenv("RESILIENCE_MAX_RETRIES", "4")
+
+        settings = Settings(_env_file=env_file)
+
+        assert settings.openai.api_key.get_secret_value() == "sk-process"
+        assert settings.openai.model == "dotenv-model"
+        assert settings.database.host == "process-db"
+        assert settings.database.user == "dotenv-user"
+        assert settings.security.blocked_columns == ["email", "users.ssn"]
+        assert settings.security.blocked_tables == ["public.credentials", "api_keys"]
+        assert settings.resilience.max_retries == 4
+
 
 class TestSettingsGlobalInstance:
     """Tests for global settings instance management."""

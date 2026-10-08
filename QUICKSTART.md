@@ -4,7 +4,7 @@
 
 ## 前置条件
 
-- Python 3.14+
+- Python 3.12+
 - PostgreSQL 数据库（运行中且可访问）
 - OpenAI API 密钥
 

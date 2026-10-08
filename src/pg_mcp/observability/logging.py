@@ -270,7 +270,7 @@ def configure_logging(
         root_logger.removeHandler(handler)
 
     # Create console handler
-    handler = logging.StreamHandler(sys.stdout)
+    handler = logging.StreamHandler(sys.stderr)
 
     # Set formatter
     formatter: logging.Formatter

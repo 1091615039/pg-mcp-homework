@@ -299,6 +299,15 @@ class TestSensitiveResources:
             validator.validate_or_raise(sql)
         assert "passwords" in str(exc_info.value).lower()
 
+    def test_schema_qualified_blocked_table_matches_unqualified_name_on_search_path(self) -> None:
+        validator = SQLValidator(
+            config=SecurityConfig(safe_search_path="public, reporting"),
+            blocked_tables=["public.credentials"],
+        )
+
+        assert not validator.validate("SELECT id FROM credentials")[0]
+        assert not validator.validate("SELECT id FROM public.credentials")[0]
+
     def test_blocked_table_in_join(self) -> None:
         """Test blocked table in JOIN is rejected."""
         config = SecurityConfig()
@@ -423,7 +432,36 @@ class TestSensitiveResources:
         validator = SQLValidator(config=SecurityConfig(), allowed_columns=["users.id"])
 
         assert not validator.validate("SELECT * FROM users")[0]
+        assert not validator.validate("SELECT u.* FROM users AS u")[0]
         assert validator.validate("SELECT COUNT(*) FROM users")[0]
+
+    def test_column_policy_rejects_whole_row_and_row_serialization(self) -> None:
+        validator = SQLValidator(config=SecurityConfig(), blocked_columns=["users.email"])
+
+        for sql in (
+            "SELECT u FROM users AS u",
+            "SELECT row_to_json(u) FROM users AS u",
+            "SELECT to_jsonb(u) FROM users AS u",
+        ):
+            assert not validator.validate(sql)[0], sql
+
+    def test_column_policy_tracks_cte_origins_and_allows_explicit_safe_columns(self) -> None:
+        validator = SQLValidator(config=SecurityConfig(), blocked_columns=["users.email"])
+
+        assert validator.validate(
+            "WITH profile AS (SELECT u.id, u.name FROM users AS u) SELECT profile.name FROM profile"
+        )[0]
+        assert not validator.validate(
+            "WITH profile AS (SELECT u.email FROM users AS u) SELECT profile.email FROM profile"
+        )[0]
+
+    def test_column_allowlist_rejects_using_and_natural_join(self) -> None:
+        validator = SQLValidator(
+            config=SecurityConfig(), allowed_columns=["users.id", "posts.user_id"]
+        )
+
+        assert not validator.validate("SELECT users.id FROM users JOIN posts USING (user_id)")[0]
+        assert not validator.validate("SELECT users.id FROM users NATURAL JOIN posts")[0]
 
     def test_unqualified_column_cannot_bypass_qualified_denial_in_join(self) -> None:
         """Ambiguous/unqualified references fail closed against qualified column rules."""
@@ -597,6 +635,13 @@ class TestExplainStatements:
         is_valid, error = validator.validate(sql)
         assert is_valid
         assert error is None
+
+    def test_explain_analyze_option_false_is_non_executing(self) -> None:
+        validator = SQLValidator(config=SecurityConfig(), allow_explain=True)
+
+        assert validator.validate("EXPLAIN (ANALYZE FALSE) SELECT 1")[0]
+        assert validator.validate("EXPLAIN (ANALYZE = FALSE) SELECT 1")[0]
+        assert not validator.validate("EXPLAIN (ANALYZE = TRUE) SELECT 1")[0]
 
     def test_explain_rejects_write_statements(self) -> None:
         """EXPLAIN policy still applies the read-only SQL policy to its target."""

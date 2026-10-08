@@ -4,9 +4,19 @@ This module provides E2E tests for the FastMCP server implementation,
 testing the complete query flow through the MCP protocol.
 """
 
+import os
+
 import pytest
 
 from pg_mcp.server import lifespan, mcp, query
+
+if os.getenv("PG_MCP_RUN_EXTERNAL_TESTS") != "1":
+    pytest.skip(
+        "requires configured PostgreSQL and OpenAI-compatible credentials",
+        allow_module_level=True,
+    )
+
+pytestmark = pytest.mark.external
 
 
 class TestMCPServer:

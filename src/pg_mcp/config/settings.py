@@ -6,10 +6,19 @@ sensible defaults.
 """
 
 import json
-from typing import Any, Literal
+from collections.abc import Callable
+from typing import Annotated, Any, Literal, cast
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    EnvSettingsSource,
+    NoDecode,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+NameList = Annotated[list[str], NoDecode]
 
 
 class DatabaseConfig(BaseSettings):
@@ -86,7 +95,7 @@ class SecurityConfig(BaseSettings):
     allow_write_operations: bool = Field(
         default=False, description="Allow write operations (INSERT, UPDATE, DELETE)"
     )
-    blocked_functions: list[str] = Field(
+    blocked_functions: NameList = Field(
         default_factory=lambda: [
             "pg_sleep",
             "pg_read_file",
@@ -106,27 +115,27 @@ class SecurityConfig(BaseSettings):
     safe_search_path: str = Field(
         default="public", description="Safe search_path to set during query execution"
     )
-    blocked_schemas: list[str] = Field(
+    blocked_schemas: NameList = Field(
         default_factory=list,
         description="Schemas that may never be queried",
     )
-    blocked_tables: list[str] = Field(
+    blocked_tables: NameList = Field(
         default_factory=list,
         description="Tables that may never be queried (optionally schema.table)",
     )
-    blocked_columns: list[str] = Field(
+    blocked_columns: NameList = Field(
         default_factory=list,
         description="Columns that may never be returned (optionally table.column)",
     )
-    allowed_schemas: list[str] = Field(
+    allowed_schemas: NameList = Field(
         default_factory=list,
         description="If set, only these schemas may be queried",
     )
-    allowed_tables: list[str] = Field(
+    allowed_tables: NameList = Field(
         default_factory=list,
         description="If set, only these tables may be queried",
     )
-    allowed_columns: list[str] = Field(
+    allowed_columns: NameList = Field(
         default_factory=list,
         description="If set, only these columns may be returned",
     )
@@ -139,15 +148,8 @@ class SecurityConfig(BaseSettings):
         description="Allow EXPLAIN ANALYZE (executes the underlying query)",
     )
 
-    @field_validator("blocked_functions", mode="before")
-    @classmethod
-    def parse_blocked_functions(cls, v: str | list[str]) -> list[str]:
-        """Parse comma-separated string or list."""
-        if isinstance(v, str):
-            return [f.strip() for f in v.split(",") if f.strip()]
-        return v
-
     @field_validator(
+        "blocked_functions",
         "blocked_schemas",
         "blocked_tables",
         "blocked_columns",
@@ -162,7 +164,11 @@ class SecurityConfig(BaseSettings):
         if v is None:
             return []
         if isinstance(v, str):
-            return [item.strip() for item in v.split(",") if item.strip()]
+            if not v.lstrip().startswith("["):
+                return [item.strip() for item in v.split(",") if item.strip()]
+            v = json.loads(v)
+        if not isinstance(v, list):
+            raise ValueError("Access policies must be a list or comma-separated names")
         return [str(item).strip() for item in v if str(item).strip()]
 
 
@@ -273,6 +279,48 @@ class Settings(BaseSettings):
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
 
+    @classmethod
+    def settings_customise_sources(  # type: ignore[override]
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource | Callable[[], dict[str, Any]], ...]:
+        """Nest flat prefixed values before validation, retaining source precedence.
+
+        Explicit arguments > process environment > the selected dotenv file > defaults.
+        No process-global environment mutation is needed, including for custom _env_file.
+        """
+        sections = {
+            "database": DatabaseConfig,
+            "openai": OpenAIConfig,
+            "security": SecurityConfig,
+            "validation": ValidationConfig,
+            "cache": CacheConfig,
+            "resilience": ResilienceConfig,
+            "observability": ObservabilityConfig,
+        }
+
+        def nested(source: PydanticBaseSettingsSource) -> Callable[[], dict[str, Any]]:
+            def load() -> dict[str, Any]:
+                data = source()
+                if isinstance(source, EnvSettingsSource):
+                    for section, config_type in sections.items():
+                        options = dict(data.get(section) or {})
+                        for field in cast("Any", config_type).model_fields:
+                            value = source.env_vars.get(f"{section}_{field}")
+                            if value is not None:
+                                options.setdefault(field, value)
+                        if options:
+                            data[section] = options
+                return data
+
+            return load
+
+        return init_settings, nested(env_settings), nested(dotenv_settings), file_secret_settings
+
     @field_validator("databases", mode="before")
     @classmethod
     def parse_databases(cls, value: Any) -> dict[str, Any]:
@@ -297,9 +345,9 @@ class Settings(BaseSettings):
         normalized: dict[str, Any] = {}
         for name, config in value.items():
             if isinstance(config, DatabaseConfig):
-                normalized[str(name)] = config.model_copy(update={"name": str(name)})
+                normalized[str(name)] = config
             elif isinstance(config, dict):
-                normalized[str(name)] = {**config, "name": str(name)}
+                normalized[str(name)] = {"name": str(name), **config}
             else:
                 raise ValueError(f"Invalid database configuration for '{name}'")
         return normalized

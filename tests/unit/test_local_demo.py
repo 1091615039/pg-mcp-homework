@@ -1,8 +1,11 @@
 """Tests for the API-key-free local demonstration."""
 
+# Chinese punctuation in the display text is intentional.
+# ruff: noqa: RUF001
+
 import pytest
 
-from pg_mcp.demo import LocalDemo
+from pg_mcp.demo import LocalDemo, _format_rows, main
 from pg_mcp.models.errors import SecurityViolationError
 
 
@@ -42,3 +45,31 @@ def test_join_query_returns_author_names(demo: LocalDemo) -> None:
 
     assert len(answer.rows) == 3
     assert answer.rows[0]["author"] == "陈宇"
+
+
+def test_per_user_post_count_uses_grouped_query(demo: LocalDemo) -> None:
+    answer = demo.ask("统计每个用户的文章数量")
+
+    assert "GROUP BY u.id, u.name" in answer.sql
+    assert answer.rows == [
+        {"name": "林晓", "post_count": 2},
+        {"name": "陈宇", "post_count": 1},
+        {"name": "周宁", "post_count": 1},
+    ]
+
+
+def test_format_empty_rows_is_readable() -> None:
+    assert _format_rows([]) == "（没有结果）"
+
+
+def test_interactive_demo_shows_query_and_security_results(monkeypatch, capsys) -> None:
+    questions = iter(["统计每个用户的文章数量", "安全演示", "q"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(questions))
+
+    main()
+
+    output = capsys.readouterr().out
+    assert "SQLite" in output
+    assert "post_count" in output
+    assert "已拦截" in output
+    assert "GROUP BY u.id, u.name" in output

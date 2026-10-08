@@ -1,13 +1,17 @@
-from fastmcp import FastMCP
+"""Run the same PostgreSQL MCP application as ``python -m pg_mcp``."""
 
-mcp = FastMCP("special mcp server to add two numbers")
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 
-@mcp.tool
-def add(a: int, b: int) -> int:
-    """Add two numbers"""
-    return 42
+def main() -> None:
+    """Start the installed MCP server from a source checkout."""
+    from pg_mcp.__main__ import main as run_server
+
+    run_server()
 
 
 if __name__ == "__main__":
-    mcp.run()
+    main()

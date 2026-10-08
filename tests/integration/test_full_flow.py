@@ -4,9 +4,19 @@ This module provides comprehensive integration tests that verify the complete
 query flow through all components of the system.
 """
 
+import os
+
 import pytest
 
 from pg_mcp.server import lifespan, mcp, query
+
+if os.getenv("PG_MCP_RUN_EXTERNAL_TESTS") != "1":
+    pytest.skip(
+        "requires configured PostgreSQL and OpenAI-compatible credentials",
+        allow_module_level=True,
+    )
+
+pytestmark = pytest.mark.external
 
 
 class TestFullQueryFlow:

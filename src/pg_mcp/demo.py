@@ -74,11 +74,6 @@ class LocalDemo:
         """Map a supported demo question to a SQL template."""
         normalized = re.sub(r"\s+", "", question).lower()
 
-        if any(word in normalized for word in ("用户", "user")) and any(
-            word in normalized for word in ("多少", "数量", "count", "统计")
-        ):
-            return "SELECT COUNT(*) AS user_count FROM users"
-
         if any(word in normalized for word in ("每个用户", "按用户", "peruser")) and any(
             word in normalized for word in ("文章", "帖子", "post")
         ):
@@ -87,6 +82,11 @@ class LocalDemo:
                 "FROM users AS u LEFT JOIN posts AS p ON p.user_id = u.id "
                 "GROUP BY u.id, u.name ORDER BY post_count DESC, u.id"
             )
+
+        if any(word in normalized for word in ("用户", "user")) and any(
+            word in normalized for word in ("多少", "数量", "count", "统计")
+        ):
+            return "SELECT COUNT(*) AS user_count FROM users"
 
         if any(word in normalized for word in ("已发布", "发布的", "published")) and any(
             word in normalized for word in ("文章", "帖子", "post")

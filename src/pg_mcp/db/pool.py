@@ -47,14 +47,17 @@ async def create_pool(config: DatabaseConfig) -> Pool:
     return pool
 
 
-async def create_pools(configs: list[DatabaseConfig]) -> dict[str, Pool]:
+async def create_pools(
+    configs: list[DatabaseConfig] | dict[str, DatabaseConfig],
+) -> dict[str, Pool]:
     """Create connection pools for multiple databases.
 
     This function creates pools concurrently for all provided database
     configurations.
 
     Args:
-        configs: List of database configurations.
+        configs: Database configurations. A mapping's key is the logical route name;
+            each value retains the physical PostgreSQL database name in ``config.name``.
 
     Returns:
         dict[str, Pool]: Dictionary mapping database names to their pools.
@@ -72,9 +75,10 @@ async def create_pools(configs: list[DatabaseConfig]) -> dict[str, Pool]:
     """
     pools: dict[str, Pool] = {}
 
-    for config in configs:
+    entries = configs.items() if isinstance(configs, dict) else ((c.name, c) for c in configs)
+    for route_name, config in entries:
         pool = await create_pool(config)
-        pools[config.name] = pool
+        pools[route_name] = pool
 
     return pools
 

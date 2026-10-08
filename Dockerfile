@@ -7,8 +7,8 @@
 # ============================================================================
 # Stage 1: Builder
 # ============================================================================
-# Use official Python 3.14 image as base
-FROM python:3.14-slim as builder
+# Use official Python 3.12 image as base
+FROM python:3.12-slim as builder
 
 # Set working directory
 WORKDIR /build
@@ -34,7 +34,7 @@ RUN uv pip install --system --no-dev --frozen
 
 # Copy source code
 COPY src/ ./src/
-COPY main.py ./
+COPY src/pg_mcp ./src/pg_mcp
 
 # Install the package
 RUN uv pip install --system --no-deps .
@@ -42,7 +42,7 @@ RUN uv pip install --system --no-deps .
 # ============================================================================
 # Stage 2: Runtime
 # ============================================================================
-FROM python:3.14-slim
+FROM python:3.12-slim
 
 # Metadata labels
 LABEL maintainer="your-email@example.com"
@@ -70,12 +70,11 @@ RUN groupadd -r pgmcp && useradd -r -g pgmcp pgmcp
 WORKDIR /app
 
 # Copy Python packages from builder
-COPY --from=builder /usr/local/lib/python3.14/site-packages /usr/local/lib/python3.14/site-packages
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy application code
 COPY --from=builder /build/src ./src
-COPY --from=builder /build/main.py ./
 
 # Create directory for logs (if needed)
 RUN mkdir -p /app/logs && chown -R pgmcp:pgmcp /app
@@ -93,4 +92,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 # Default command
 # Run the MCP server
-CMD ["python", "main.py"]
+CMD ["python", "-m", "pg_mcp"]

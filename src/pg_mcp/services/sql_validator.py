@@ -10,6 +10,7 @@ from typing import ClassVar
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from pg_mcp.config.settings import SecurityConfig
 from pg_mcp.models.errors import SecurityViolationError, SQLParseError
@@ -76,6 +77,14 @@ class SQLValidator:
         "pg_execute_sql",
         "copy_from",
         "copy_to",
+        "query_to_xml",
+        "query_to_xmlschema",
+        "query_to_xml_and_xmlschema",
+        "table_to_xml",
+        "table_to_xmlschema",
+        "table_to_xml_and_xmlschema",
+        "schema_to_xml",
+        "database_to_xml",
     }
 
     def __init__(
@@ -172,13 +181,22 @@ class SQLValidator:
             if not self.allow_explain:
                 raise SecurityViolationError("EXPLAIN statements are not allowed")
             options = (explain_match.group("options") or "").upper()
-            if "ANALYZE" in options and not self.allow_explain_analyze:
+            analyze_option = re.search(
+                r"\bANALY[ZS]E\b\s*(?:=\s*)?(TRUE|FALSE|ON|OFF|1|0)?\b",
+                options,
+            )
+            analyzes = analyze_option is not None and analyze_option.group(1) not in {
+                "FALSE",
+                "OFF",
+                "0",
+            }
+            if analyzes and not self.allow_explain_analyze:
                 raise SecurityViolationError("EXPLAIN ANALYZE is not allowed")
-            if re.match(r"^ANALYZE\b", explain_match.group("inner"), re.IGNORECASE):
+            if re.match(r"^ANALY[ZS]E\b", explain_match.group("inner"), re.IGNORECASE):
                 if not self.allow_explain_analyze:
                     raise SecurityViolationError("EXPLAIN ANALYZE is not allowed")
                 inner_sql = re.sub(
-                    r"^ANALYZE\b", "", explain_match.group("inner"), count=1, flags=re.IGNORECASE
+                    r"^ANALY[ZS]E\b", "", explain_match.group("inner"), count=1, flags=re.IGNORECASE
                 ).lstrip()
             else:
                 inner_sql = explain_match.group("inner")
@@ -234,6 +252,9 @@ class SQLValidator:
         if error := self._check_statement_type(main_query):
             raise SecurityViolationError(error)
 
+        if statement.find(exp.Into):
+            raise SecurityViolationError("SELECT INTO is not allowed")
+
         if not self.config.allow_write_operations and any(
             isinstance(node, (exp.Insert, exp.Update, exp.Delete)) for node in statement.walk()
         ):
@@ -254,6 +275,9 @@ class SQLValidator:
             raise SecurityViolationError(error)
 
         if error := self._check_allowed_tables(statement):
+            raise SecurityViolationError(error)
+
+        if error := self._check_restricted_projections(statement):
             raise SecurityViolationError(error)
 
         if error := self._check_blocked_columns(statement):
@@ -306,10 +330,9 @@ class SQLValidator:
         """
         # Find all function calls in the query
         for func in statement.find_all(exp.Func):
-            func_name = func.name.lower() if func.name else ""
-
-            if func_name in self.blocked_functions:
-                return f"Function '{func_name}' is blocked for security reasons"
+            names = {func.name.lower(), func.sql_name().lower()}
+            if blocked := names.intersection(self.blocked_functions):
+                return f"Function '{sorted(blocked)[0]}' is blocked for security reasons"
 
         return None
 
@@ -326,11 +349,16 @@ class SQLValidator:
             return None
 
         # Find all table references
-        for table in statement.find_all(exp.Table):
+        for table in self._physical_tables(statement):
             table_name = table.name.lower() if table.name else ""
             qualified_name = self._qualified_table_name(table)
 
-            if table_name in self.blocked_tables or qualified_name in self.blocked_tables:
+            candidates = {table_name, qualified_name}
+            if not table.db:
+                candidates.update(
+                    f"{schema}.{table_name}" for schema in self._safe_search_path_schemas()
+                )
+            if candidates.intersection(self.blocked_tables):
                 return f"Access to table '{qualified_name}' is not allowed"
 
         return None
@@ -346,7 +374,7 @@ class SQLValidator:
         if not self.blocked_schemas:
             return None
         search_path = self._safe_search_path_schemas()
-        for table in statement.find_all(exp.Table):
+        for table in self._physical_tables(statement):
             schema = (table.db or "").lower()
             if schema and schema in self.blocked_schemas:
                 return f"Access to schema '{schema}' is not allowed"
@@ -363,7 +391,7 @@ class SQLValidator:
         if not self.allowed_schemas:
             return None
         search_path = self._safe_search_path_schemas()
-        for table in statement.find_all(exp.Table):
+        for table in self._physical_tables(statement):
             if table.db:
                 schema = table.db.lower()
                 if schema not in self.allowed_schemas:
@@ -387,7 +415,7 @@ class SQLValidator:
     def _check_allowed_tables(self, statement: exp.Expr) -> str | None:
         if not self.allowed_tables:
             return None
-        for table in statement.find_all(exp.Table):
+        for table in self._physical_tables(statement):
             table_name = self._qualified_table_name(table)
             short_name = (table.name or "").lower()
             # A short allow-list entry only matches an unqualified reference.
@@ -416,7 +444,7 @@ class SQLValidator:
             return None
 
         aliases = self._table_aliases(statement)
-        unaliased_tables = {table.name.lower() for table in statement.find_all(exp.Table)}
+        unaliased_tables = {table.name.lower() for table in self._physical_tables(statement)}
         for column in statement.find_all(exp.Column):
             column_name = column.name.lower() if column.name else ""
 
@@ -426,10 +454,11 @@ class SQLValidator:
 
             # Check for qualified column names (table.column)
             if column.table:
-                table_name = aliases.get(column.table.lower(), column.table.lower())
-                qualified_name = f"{table_name}.{column_name}"
-                if qualified_name in self.blocked_columns:
-                    return f"Access to column '{qualified_name}' is not allowed"
+                table_names = aliases.get(column.table.lower(), {column.table.lower()})
+                for table_name in table_names:
+                    qualified_name = f"{table_name}.{column_name}"
+                    if qualified_name in self.blocked_columns:
+                        return f"Access to column '{qualified_name}' is not allowed"
             else:
                 matching_restriction = next(
                     (
@@ -453,34 +482,75 @@ class SQLValidator:
         if any(not isinstance(star.parent, exp.Count) for star in statement.find_all(exp.Star)):
             return "Wildcard column access is not allowed when allowed_columns is configured"
         aliases = self._table_aliases(statement)
-        unaliased_tables = {table.name.lower() for table in statement.find_all(exp.Table)}
+        unaliased_tables = {table.name.lower() for table in self._physical_tables(statement)}
         for column in statement.find_all(exp.Column):
             column_name = (column.name or "").lower()
+            if column_name in self.allowed_columns:
+                continue
             if column.table:
-                table_name = aliases.get(column.table.lower(), column.table.lower())
-                qualified_names = {column_name, f"{table_name}.{column_name}"}
+                table_names = aliases.get(column.table.lower(), {column.table.lower()})
             elif len(unaliased_tables) == 1:
-                table_name = next(iter(unaliased_tables))
-                qualified_names = {column_name, f"{table_name}.{column_name}"}
+                table_names = unaliased_tables
             else:
-                qualified_names = {column_name}
-            if not qualified_names.intersection(self.allowed_columns):
-                qualified_name = next(iter(sorted(qualified_names - {column_name})), column_name)
+                return f"Ambiguous column '{column_name}' is not in the allowed column list"
+            qualified_names = {f"{name}.{column_name}" for name in table_names}
+            if not qualified_names or not qualified_names.issubset(self.allowed_columns):
+                qualified_name = next(iter(sorted(qualified_names)), column_name)
                 return f"Access to column '{qualified_name}' is not in the allowed column list"
         return None
 
     @staticmethod
-    def _table_aliases(statement: exp.Expr) -> dict[str, str]:
-        """Map table aliases to underlying table names for column policies."""
-        aliases: dict[str, str] = {}
-        for table in statement.find_all(exp.Table):
+    def _physical_tables(statement: exp.Expr) -> list[exp.Table]:
+        """Return base relations, excluding CTE names that are query-local aliases."""
+        scopes = list(traverse_scope(statement))
+        if not scopes:
+            return list(statement.find_all(exp.Table))
+        tables = {
+            id(source): source
+            for scope in scopes
+            for source in scope.sources.values()
+            if isinstance(source, exp.Table)
+        }
+        return list(tables.values())
+
+    @classmethod
+    def _table_aliases(cls, statement: exp.Expr) -> dict[str, set[str]]:
+        """Preserve all possible origins; shadowing never overwrites a protected origin."""
+        aliases: dict[str, set[str]] = {}
+        for table in cls._physical_tables(statement):
             table_name = (table.name or "").lower()
             if not table_name:
                 continue
-            aliases[table_name] = table_name
+            aliases.setdefault(table_name, set()).add(table_name)
             if table.alias:
-                aliases[table.alias.lower()] = table_name
+                aliases.setdefault(table.alias.lower(), set()).add(table_name)
+        for scope in traverse_scope(statement):
+            for alias, source in scope.sources.items():
+                if isinstance(source, Scope):
+                    origins = {t.name.lower() for t in cls._physical_tables(source.expression)}
+                    aliases.setdefault(alias.lower(), set()).update(origins)
         return aliases
+
+    def _check_restricted_projections(self, statement: exp.Expr) -> str | None:
+        """Require explicit columns under column policies; fail closed without a catalog.
+
+        COUNT(*) is safe, but wildcards, whole rows and renamed relation columns
+        could expose protected data without ever spelling the protected column.
+        """
+        if not (self.blocked_columns or self.allowed_columns):
+            return None
+        if any(not isinstance(star.parent, exp.Count) for star in statement.find_all(exp.Star)):
+            return "Wildcard column access is not allowed when column policies are configured"
+        if any(alias.args.get("columns") for alias in statement.find_all(exp.TableAlias)):
+            return "Renamed relation columns are not allowed when column policies are configured"
+        aliases = self._table_aliases(statement)
+        for column in statement.find_all(exp.Column):
+            if not column.table and column.name.lower() in aliases:
+                return "Whole-row access is not allowed when column policies are configured"
+        for join in statement.find_all(exp.Join):
+            if join.args.get("using") or join.args.get("method") == "NATURAL":
+                return "Use explicit JOIN ON columns when column policies are configured"
+        return None
 
     def _check_subquery_safety(self, statement: exp.Expr) -> str | None:
         """Check that all subqueries only contain SELECT statements.

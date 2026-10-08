@@ -38,7 +38,7 @@ python demo_local.py
 
 ### 前置条件
 
-- Python 3.14+
+- Python 3.12+
 - PostgreSQL 12+
 - OpenAI API 密钥（用于 GPT-5.2-mini）
 - UV 包管理器（推荐）或 pip
@@ -359,7 +359,7 @@ Return Type: sql
 |----------------------|-------------------------|----------------|
 | `OPENAI_API_KEY`     | OpenAI API 密钥         | 必需           |
 | `OPENAI_MODEL`       | 使用的模型              | `gpt-5.2-mini` |
-| `OPENAI_MAX_TOKENS`  | 每次请求的最大 token 数 | `32000`        |
+| `OPENAI_MAX_TOKENS`  | 每次请求的最大 token 数 | `2000`        |
 | `OPENAI_TEMPERATURE` | 模型温度                | `0.0`          |
 | `OPENAI_TIMEOUT`     | API 超时（秒）            | `30`           |
 

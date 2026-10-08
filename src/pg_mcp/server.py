@@ -99,7 +99,7 @@ async def lifespan(_app: FastMCP) -> AsyncIterator[None]:
         logger.info("Creating database connection pools...")
         _pools = {}
         database_configs = _settings.database_configs
-        _pools = await create_pools(list(database_configs.values()))
+        _pools = await create_pools(database_configs)
         for db_name, config in database_configs.items():
             logger.info(
                 f"Created connection pool for database '{db_name}'",

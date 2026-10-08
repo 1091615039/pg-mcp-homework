@@ -370,6 +370,20 @@ class TestQueryResponse:
         assert response.generated_sql is not None
         assert response.data is None
 
+    def test_response_success_and_error_fields_must_agree(self) -> None:
+        with pytest.raises(ValidationError, match="Successful responses"):
+            QueryResponse(success=True, error={"code": "ERR", "message": "failed"})
+
+        with pytest.raises(ValidationError, match="Error must be present"):
+            QueryResponse(success=False)
+
+        with pytest.raises(ValidationError, match="Data should not be present"):
+            QueryResponse(
+                success=False,
+                error={"code": "ERR", "message": "failed"},
+                data=QueryResult(),
+            )
+
 
 class TestErrorModels:
     """Tests for error models."""
