@@ -1,5 +1,23 @@
 # PostgreSQL MCP 服务器
 
+## 无 API Key 的本地演示
+
+如果只需要现场演示自然语言问题如何生成 SQL、再经安全校验并查询结果，可以直接运行离线模板演示。它不需要 OpenAI API Key、PostgreSQL、Docker 或网络：
+
+```powershell
+python demo_local.py
+```
+
+也可以用项目虚拟环境运行：
+
+```powershell
+.venv\Scripts\python.exe demo_local.py
+```
+
+试着输入“统计用户数量”“查询已发布文章”“查询最近 3 篇文章”或“统计每个用户的文章数量”。输入“安全演示”会看到敏感邮箱列被 SQL 安全校验拦截；输入 `q` 退出。
+
+该演示使用内存 SQLite 样例数据，并以有限规则匹配上述问题，不是通用自然语言理解，也不连接真实 PostgreSQL。正式 MCP 服务使用 OpenAI API 和 PostgreSQL；要在本地进行开放式自然语言转 SQL，可接入本地模型（例如 Ollama），但需要另行安装模型及运行时。
+
 一个生产级的 [Model Context Protocol (MCP)](https://modelcontextprotocol.io) 服务器，使用户能够通过自然语言与 PostgreSQL 数据库进行交互。该服务器基于 FastMCP 构建，将自然语言问题转换为安全的 SQL 查询，执行查询并验证结果。一些参考文档：
 
 - Python Postgres MCP 需求研究
