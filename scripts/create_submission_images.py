@@ -144,7 +144,7 @@ def render_acceptance(report: dict[str, Any]) -> Image.Image:
             404,
             "覆盖率",
             f"{tests['coverage_percent']:.2f}%",
-            "质量门槛 ≥ 80%",
+            "离线测试范围；排除 DB pool / server / introspection",
             "#4052CC",
         ),
         (
